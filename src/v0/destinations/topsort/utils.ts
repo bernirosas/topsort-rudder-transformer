@@ -44,6 +44,26 @@ const getMappedEventType = (
   return mappedEventType;
 };
 
+// Prefix for the event id telling which platform sent it (web, ios, android), so a marketplace can
+// trace failing events back to their source. Read from fields RudderStack's SDKs set themselves;
+// when the platform can't be told, the id stays the plain messageId.
+const getPlatform = (message: TopsortMessage): string | undefined => {
+  const { channel, context } = message as { channel?: unknown; context?: unknown };
+  if (channel === 'web') return 'web';
+  if (channel !== 'mobile') return undefined;
+
+  const osName = (context as { os?: { name?: unknown } } | undefined)?.os?.name;
+  const os = typeof osName === 'string' ? osName.toLowerCase() : '';
+  if (os.includes('android')) return 'android';
+  if (os.includes('ios') || os.includes('ipados')) return 'ios';
+  return undefined;
+};
+
+const getEventId = (message: TopsortMessage): string => {
+  const platform = getPlatform(message);
+  return platform ? `${platform}-${message.messageId}` : message.messageId;
+};
+
 // The products to fan out over, or undefined when the event maps a single product from its
 // top-level properties.
 const getProducts = ({ event, properties }: TopsortMessage): unknown[] | undefined => {
@@ -68,18 +88,19 @@ export const buildTopsortEvents = (
   const type = getMappedEventType(topsortEvents, message.event);
   const basePayload = mapFields(message, trackMapping);
   const products = getProducts(message);
+  const eventId = getEventId(message);
 
   if (type === 'purchases') {
     const items = products
       ? products.map((product) => mapFields(product, purchaseItemMapping))
       : [mapFields(message, purchaseItemMapping)];
-    return [{ type, event: { ...basePayload, items, id: message.messageId } }];
+    return [{ type, event: { ...basePayload, items, id: eventId } }];
   }
 
   const placementPayload = mapFields(message, placementMapping);
   if (!products) {
     const placement = { ...placementPayload, ...mapFields(message, itemMapping) };
-    return [{ type, event: { ...basePayload, placement, id: message.messageId } }];
+    return [{ type, event: { ...basePayload, placement, id: eventId } }];
   }
 
   // Topsort dedupes on `id`, and the messageId alone would repeat across the fanned-out events,
@@ -89,7 +110,7 @@ export const buildTopsortEvents = (
     event: {
       ...basePayload,
       placement: { ...placementPayload, ...mapFields(product, itemMapping) },
-      id: `${message.messageId}-${index}`,
+      id: `${eventId}-${index}`,
     },
   }));
 };
